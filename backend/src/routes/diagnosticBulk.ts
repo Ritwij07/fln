@@ -6,7 +6,7 @@ import { getAuthUser } from '../auth';
 import { recordStudentCycleLock } from '../paperLock';
 import { generateDiagnosticPaper } from '../paperGenerator';
 import { generateQuestionsForLevel } from '../levelGenerator';
-import { getAssessmentModesByConcept, prepareQuestionsForStudent } from '../services/assessmentMode';
+import { getAssessmentModesByConcept, getObservableConcepts, prepareQuestionsForStudent } from '../services/assessmentMode';
 import { isBalvatikaStage } from '../config/curriculumMap';
 
 export function registerDiagnosticBulkRoutes(app: express.Express) {
@@ -25,7 +25,8 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
     fileName: string;
     filePath: string;
     pdfUrl: string;
-
+    observationClassGridPdfUrl?: string;
+    observationPerChildPdfUrl?: string;
     error: string;
     startedAt: string;
     completedAt: string;
@@ -210,7 +211,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
         const allBalvatika = batchRecords.every(student => student && isBalvatikaStage(student.currentLevel));
         let result;
         if (allBalvatika) {
-          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const { renderWorksheetPdf, renderObservationClassGridPdf, renderObservationPerChildPdf } = await import('../paperGenerator');
           const localStudents = batchRecords.filter((student): student is typeof studentRecords[number] => Boolean(student)).map(student => ({
             studentId: student.id,
             name: student.name,
@@ -233,6 +234,21 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           for (const localStudent of localStudents) {
             await dbStore.assignDiagnosticPaperToStudent(localStudent.studentId, localStudent.questions);
           }
+          const observationInput = {
+            classId: `class_${job.classNumber}`,
+            className: `Class ${job.classNumber}`,
+            section: 'A',
+            cycle: 'Baseline',
+            worksheetId,
+            students: localStudents.map(student => ({ studentId: student.studentId, name: student.name })),
+            observableConcepts: getObservableConcepts(assessmentModes),
+          };
+          const [classGrid, perChild] = await Promise.all([
+            renderObservationClassGridPdf(observationInput),
+            renderObservationPerChildPdf(observationInput),
+          ]);
+          job.observationClassGridPdfUrl = classGrid.pdfUrl;
+          job.observationPerChildPdfUrl = perChild.pdfUrl;
           result = {
             ...localResult,
             fileName: localResult.fileName,
@@ -851,7 +867,8 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
 
       let questions: Question[];
       let pdfUrl = '';
-
+      let observationClassGridPdfUrl: string | undefined;
+      let observationPerChildPdfUrl: string | undefined;
       let useMock = false;
       const assessmentModes = await getAssessmentModesByConcept();
 
@@ -862,7 +879,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
             student,
             assessmentModes,
           );
-          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const { renderWorksheetPdf, renderObservationClassGridPdf, renderObservationPerChildPdf } = await import('../paperGenerator');
           const worksheetId = `diagnostic_${student.id}_${Date.now()}`;
           const localResult = await renderWorksheetPdf({
             worksheetId,
@@ -879,6 +896,23 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           });
           questions = filteredQuestions;
           pdfUrl = localResult.pdfUrl;
+          const classes = await dbStore.getClasses();
+          const classObj = classes.find(candidate => candidate.className === student.classGroup && candidate.section === student.section && candidate.schoolId === student.schoolId);
+          const observationInput = {
+            classId: classObj?.id || `class_${student.classGroup}`,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            worksheetId,
+            students: [{ studentId: student.id, name: student.name, schoolId: student.schoolId }],
+            observableConcepts: getObservableConcepts(assessmentModes),
+          };
+          const [classGrid, perChild] = await Promise.all([
+            renderObservationClassGridPdf(observationInput),
+            renderObservationPerChildPdf(observationInput),
+          ]);
+          observationClassGridPdfUrl = classGrid.pdfUrl;
+          observationPerChildPdfUrl = perChild.pdfUrl;
           useMock = true;
         } else {
         const result = await generateDiagnosticPaper({
@@ -962,6 +996,8 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           studentName: student.name,
           questions,
           pdfUrl,
+          observationClassGridPdfUrl,
+          observationPerChildPdfUrl,
         }
       });
     } catch (err: any) {

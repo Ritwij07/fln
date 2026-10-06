@@ -7,6 +7,7 @@ import { Question, dbStore } from './db';
 import { renderBatch } from './worksheetRenderer';
 import { mergeAndStamp } from './pdfMerge';
 import { drawQrCode } from './qrCode';
+import { getLevelForConcept } from './config/curriculumMap';
 import JSZip from 'jszip';
 
 // Resolve __dirname in ES Modules
@@ -594,6 +595,142 @@ body{font-family:'Segoe UI',Arial,sans-serif;margin:0;background:#fff;color:var(
 /**
  * Generate mock personalized worksheets.
  */
+export interface ObservationSheetStudent {
+  studentId: string;
+  name: string;
+  schoolId?: string;
+}
+
+export interface ObservationSheetInput {
+  classId: string;
+  className: string;
+  section: string;
+  cycle: string;
+  worksheetId: string;
+  students: ObservationSheetStudent[];
+  observableConcepts: string[];
+}
+
+const OBSERVATION_RATINGS = ['Proficient', 'Progressive', 'Beginner', 'Not yet assessed'];
+const OBSERVATION_FIXED_CONCEPT = 'MATHS_VOCABULARY';
+
+function observationConceptLabel(conceptId: string): string {
+  if (conceptId === OBSERVATION_FIXED_CONCEPT) return 'Maths vocabulary (NCF-FS C-8.12)';
+  return `${conceptId} — ${getLevelForConcept(conceptId)?.levelTitle || 'Observable outcome'}`;
+}
+
+function drawObservationHeader(page: any, boldFont: any, font: any, title: string, input: ObservationSheetInput) {
+  const { width, height } = page.getSize();
+  page.drawRectangle({ x: 0, y: height - 16, width, height: 16, color: rgb(0.06, 0.35, 0.55) });
+  page.drawText(title, { x: 36, y: height - 52, size: 16, font: boldFont, color: rgb(0.06, 0.25, 0.4) });
+  page.drawText(`CLASS: ${input.className} - Section ${input.section} | CYCLE: ${input.cycle}`, {
+    x: 36, y: height - 72, size: 9, font: boldFont, color: rgb(0.35, 0.4, 0.45),
+  });
+  page.drawText('Circle one rating after observing the child. P = on their own, Progressive = with some help, Beginner = with a lot of help.', {
+    x: 36, y: height - 88, size: 7.5, font, color: rgb(0.35, 0.4, 0.45),
+  });
+}
+
+function drawRatingBoxes(page: any, font: any, x: number, y: number, cellWidth: number) {
+  const labelWidth = cellWidth / OBSERVATION_RATINGS.length;
+  OBSERVATION_RATINGS.forEach((rating, index) => {
+    const cellX = x + index * labelWidth;
+    page.drawRectangle({ x: cellX + 3, y: y - 7, width: 8, height: 8, borderColor: rgb(0.25, 0.3, 0.35), borderWidth: 0.7 });
+    page.drawText(rating === 'Not yet assessed' ? 'NYA' : rating.slice(0, 3), {
+      x: cellX + 14, y: y - 5, size: 6.5, font, color: rgb(0.25, 0.3, 0.35),
+    });
+  });
+}
+
+/** Render the class-grid observation sheet: students are rows and outcomes are columns. */
+export async function renderObservationClassGridPdf(input: ObservationSheetInput): Promise<WorksheetPdfResult> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const concepts = [...input.observableConcepts, OBSERVATION_FIXED_CONCEPT];
+  const pageWidth = 841.89;
+  const pageHeight = 595.28;
+  const conceptChunkSize = 5;
+  const rowHeight = 25;
+
+  for (let offset = 0; offset < concepts.length; offset += conceptChunkSize) {
+    const chunk = concepts.slice(offset, offset + conceptChunkSize);
+    const page = pdf.addPage([pageWidth, pageHeight]);
+    drawObservationHeader(page, boldFont, font, 'TEACHER OBSERVATION — CLASS GRID', input);
+    const left = 36;
+    const top = pageHeight - 125;
+    const nameWidth = 130;
+    const outcomeWidth = (pageWidth - left * 2 - nameWidth) / chunk.length;
+    page.drawRectangle({ x: left, y: top - rowHeight, width: nameWidth, height: rowHeight, color: rgb(0.88, 0.93, 0.96), borderColor: rgb(0.5, 0.6, 0.65), borderWidth: 0.6 });
+    page.drawText('Student', { x: left + 6, y: top - 16, size: 8, font: boldFont });
+    chunk.forEach((conceptId, index) => {
+      const x = left + nameWidth + index * outcomeWidth;
+      page.drawRectangle({ x, y: top - rowHeight, width: outcomeWidth, height: rowHeight, color: rgb(0.88, 0.93, 0.96), borderColor: rgb(0.5, 0.6, 0.65), borderWidth: 0.6 });
+      const label = observationConceptLabel(conceptId).slice(0, 42);
+      page.drawText(label, { x: x + 3, y: top - 10, size: 6, font: boldFont, maxWidth: outcomeWidth - 6 });
+      page.drawText(conceptId, { x: x + 3, y: top - 20, size: 5.5, font });
+    });
+    input.students.forEach((student, row) => {
+      const y = top - rowHeight * (row + 2);
+      page.drawRectangle({ x: left, y, width: nameWidth, height: rowHeight, borderColor: rgb(0.7, 0.75, 0.78), borderWidth: 0.5 });
+      page.drawText(student.name.slice(0, 24), { x: left + 6, y: y + 9, size: 7.5, font: boldFont });
+      chunk.forEach((_, index) => {
+        const x = left + nameWidth + index * outcomeWidth;
+        page.drawRectangle({ x, y, width: outcomeWidth, height: rowHeight, borderColor: rgb(0.7, 0.75, 0.78), borderWidth: 0.5 });
+        page.drawText('P    Pr    B    NYA', { x: x + 4, y: y + 9, size: 6, font });
+      });
+    });
+    drawQrCode(page, { documentType: 'teacher-observation', layout: 'class-grid', classId: input.classId, cycle: input.cycle, worksheetId: input.worksheetId, conceptIds: chunk }, pageWidth - 95, 28, 55);
+    page.drawText(`Page ${Math.floor(offset / conceptChunkSize) + 1} · Scan QR before submitting observations`, { x: 36, y: 32, size: 7, font, color: rgb(0.45, 0.45, 0.45) });
+  }
+
+  const fileName = `observation_class_grid_${input.classId}_${randomUUID()}.pdf`;
+  const filePath = path.join(OUTPUT_DIR, fileName);
+  fs.writeFileSync(filePath, Buffer.from(await pdf.save()));
+  return { fileName, filePath, pdfUrl: `/output/${fileName}` };
+}
+
+/** Render one observation card per child, with the same record keys as the class grid. */
+export async function renderObservationPerChildPdf(input: ObservationSheetInput): Promise<WorksheetPdfResult> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const concepts = [...input.observableConcepts, OBSERVATION_FIXED_CONCEPT];
+  const pageWidth = 595.28;
+  const pageHeight = 841.89;
+  const cardHeight = 320;
+  const conceptsPerCard = 11;
+
+  for (let offset = 0; offset < concepts.length; offset += conceptsPerCard) {
+    const chunk = concepts.slice(offset, offset + conceptsPerCard);
+    for (let firstStudent = 0; firstStudent < input.students.length; firstStudent += 2) {
+      const page = pdf.addPage([pageWidth, pageHeight]);
+      drawObservationHeader(page, boldFont, font, 'TEACHER OBSERVATION — PER CHILD', input);
+      [0, 1].forEach(slot => {
+        const student = input.students[firstStudent + slot];
+        if (!student) return;
+        const cardTop = pageHeight - 110 - slot * 350;
+        const cardBottom = cardTop - cardHeight;
+        page.drawRectangle({ x: 30, y: cardBottom, width: pageWidth - 60, height: cardHeight - 12, borderColor: rgb(0.45, 0.55, 0.62), borderWidth: 0.8 });
+        page.drawText(`STUDENT: ${student.name}    ID: ${student.studentId}`, { x: 36, y: cardTop - 20, size: 9, font: boldFont });
+        chunk.forEach((conceptId, row) => {
+          const y = cardTop - 42 - row * 25;
+          page.drawRectangle({ x: 36, y: y - 16, width: 285, height: 22, borderColor: rgb(0.7, 0.75, 0.78), borderWidth: 0.5 });
+          page.drawText(observationConceptLabel(conceptId).slice(0, 55), { x: 41, y: y - 8, size: 7, font });
+          drawRatingBoxes(page, font, 321, y + 2, 235 - 36);
+        });
+        drawQrCode(page, { documentType: 'teacher-observation', layout: 'per-child', classId: input.classId, studentId: student.studentId, cycle: input.cycle, worksheetId: input.worksheetId, conceptIds: chunk }, pageWidth - 96, cardBottom + 20, 55);
+        page.drawText(`Student card · ${offset + 1}-${Math.min(offset + conceptsPerCard, concepts.length)} of ${concepts.length}`, { x: 36, y: cardBottom + 20, size: 7, font, color: rgb(0.45, 0.45, 0.45) });
+      });
+    }
+  }
+
+  const fileName = `observation_per_child_${input.classId}_${randomUUID()}.pdf`;
+  const filePath = path.join(OUTPUT_DIR, fileName);
+  fs.writeFileSync(filePath, Buffer.from(await pdf.save()));
+  return { fileName, filePath, pdfUrl: `/output/${fileName}` };
+}
+
 export async function renderWorksheetPdf({
   worksheetId,
   className,

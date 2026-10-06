@@ -15,6 +15,7 @@ import { CURRICULUM_MAPPING } from '../config/curriculumMap';
 import { directPrerequisites, describeConcept } from '../competencyPrerequisites';
 import { analyzeScanQuality } from '../scanQuality';
 import { calculateStandardAdvancement } from '../gradeLevelCalculator';
+import { persistObservationScan } from '../services/observationScan';
 
 export function registerEvaluationRoutes(app: express.Express) {
 
@@ -556,7 +557,7 @@ export function registerEvaluationRoutes(app: express.Express) {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { imageDataUrl, fileBase64, provider, expectedCount, proceedDespiteQualityWarning } = req.body || {};
+    const { imageDataUrl, fileBase64, provider, expectedCount, proceedDespiteQualityWarning, observationQrPayload, observationSchoolId, observationClassId, observationCycle } = req.body || {};
     const singleDataUrl = imageDataUrl || fileBase64;
     if (!singleDataUrl || typeof singleDataUrl !== 'string') {
       return res.status(400).json({ error: 'imageDataUrl or fileBase64 is required (data URL).' });
@@ -606,6 +607,21 @@ export function registerEvaluationRoutes(app: express.Express) {
     const r = await runCloudOcrOnImage(singleDataUrl, provider, apiKey, expectedCountNum);
     if (r.body && typeof r.body === 'object') {
       r.body.scanQuality = qualityResult;
+      if (observationQrPayload && r.status === 200 && Array.isArray(r.body.answers)) {
+        try {
+          r.body.observationRecords = await persistObservationScan({
+            qrPayload: observationQrPayload,
+            ratings: r.body.answers,
+            schoolId: observationSchoolId,
+            classId: observationClassId,
+            cycle: observationCycle,
+            teacherId: user.id,
+            teacherEmail: user.email,
+          });
+        } catch (observationError: any) {
+          return res.status(400).json({ ...r.body, observationError: observationError?.message || String(observationError) });
+        }
+      }
     }
     return res.status(r.status).json(r.body);
   });
@@ -762,7 +778,7 @@ export function registerEvaluationRoutes(app: express.Express) {
     const user = getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { fileDataUrl, imageDataUrl, fileBase64, provider, pagesPerStudent, expectedCount } = req.body || {};
+    const { fileDataUrl, imageDataUrl, fileBase64, provider, pagesPerStudent, expectedCount, observationQrPayloads, observationSchoolId, observationClassId, observationCycle } = req.body || {};
     const singleDataUrl = fileDataUrl || imageDataUrl || fileBase64;
     if (!singleDataUrl || typeof singleDataUrl !== 'string') {
       return res.status(400).json({ error: 'fileDataUrl / imageDataUrl / fileBase64 is required (data URL).' });
@@ -899,12 +915,32 @@ export function registerEvaluationRoutes(app: express.Express) {
         continue;
       }
       // Successful OCR for this chunk.
+      let observationRecords;
+      let observationError;
+      const observationQrPayload = Array.isArray(observationQrPayloads) ? observationQrPayloads[i] : undefined;
+      if (observationQrPayload && Array.isArray(r.body.answers)) {
+        try {
+          observationRecords = await persistObservationScan({
+            qrPayload: observationQrPayload,
+            ratings: r.body.answers,
+            schoolId: observationSchoolId,
+            classId: observationClassId,
+            cycle: observationCycle,
+            teacherId: user.id,
+            teacherEmail: user.email,
+          });
+        } catch (error: any) {
+          observationError = error?.message || String(error);
+        }
+      }
       results.push({
         studentIndex: i,
         pageFrom: sub.pageFrom,
         pageTo: sub.pageTo,
         pageCount: sub.pageCount,
-        success: true,
+        success: !observationError,
+        observationRecords,
+        observationError,
         answers: r.body.answers || [],
         rawOcrText: r.body.rawOcrText || '',
         extractedTokens: r.body.extractedTokens || [],

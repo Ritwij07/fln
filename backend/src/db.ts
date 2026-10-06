@@ -2859,14 +2859,20 @@ export class DBStore {
 
   /** One student's ratings across every observed concept, for one cycle. */
   async getObservationRecordsForStudent(studentId: string, cycle: string) {
-    return await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records')
-      .find({ studentId, cycle }).toArray();
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<TeacherObservationRecord>('teacher_observation_records')
+        .find({ studentId, cycle }).toArray();
+    }
+    return (this.data?.teacherObservationRecords || []).filter(record => record.studentId === studentId && record.cycle === cycle);
   }
 
-  /** A whole class's ratings on one concept, for one cycle -- the class-grid sheet's read path. */
+  /** A whole class's ratings for one cycle -- the class-grid sheet's read path. */
   async getObservationRecordsForClass(classId: string, cycle: string) {
-    return await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records')
-      .find({ classId, cycle }).toArray();
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<TeacherObservationRecord>('teacher_observation_records')
+        .find({ classId, cycle }).toArray();
+    }
+    return (this.data?.teacherObservationRecords || []).filter(record => record.classId === classId && record.cycle === cycle);
   }
 
   /**
@@ -2875,11 +2881,21 @@ export class DBStore {
    * rather than duplicating it.
    */
   async upsertObservationRecord(record: TeacherObservationRecord) {
-    await this.mongoDb!.collection<TeacherObservationRecord>('teacher_observation_records').updateOne(
-      { studentId: record.studentId, conceptId: record.conceptId, cycle: record.cycle },
-      { $set: record },
-      { upsert: true }
-    );
+    if (this.mongoDb) {
+      await this.mongoDb.collection<TeacherObservationRecord>('teacher_observation_records').updateOne(
+        { studentId: record.studentId, conceptId: record.conceptId, cycle: record.cycle },
+        { $set: record },
+        { upsert: true }
+      );
+    }
+    if (this.data) {
+      const index = this.data.teacherObservationRecords.findIndex(existing =>
+        existing.studentId === record.studentId && existing.conceptId === record.conceptId && existing.cycle === record.cycle
+      );
+      if (index >= 0) this.data.teacherObservationRecords[index] = record;
+      else this.data.teacherObservationRecords.push(record);
+      await this.persistCollection('teacherObservationRecords');
+    }
     return record;
   }
 

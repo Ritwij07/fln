@@ -8,7 +8,7 @@ import { generateQuestionsForLevel } from '../levelGenerator';
 import * as levelsBackendClient from '../levelsBackendClient';
 import { ROOT_DIR } from '../config';
 import { recordStudentCycleLock } from '../paperLock';
-import { getAssessmentModesByConcept, prepareQuestionsForStudent } from '../services/assessmentMode';
+import { getAssessmentModesByConcept, getObservableConcepts, prepareQuestionsForStudent } from '../services/assessmentMode';
 import { isBalvatikaStage } from '../config/curriculumMap';
 
 /**
@@ -349,7 +349,7 @@ export function registerWorksheetRoutes(app: express.Express) {
     }
 
     try {
-      const { renderWorksheetPdf } = await import('../paperGenerator');
+      const { renderWorksheetPdf, renderObservationClassGridPdf, renderObservationPerChildPdf } = await import('../paperGenerator');
       const result = await renderWorksheetPdf({
         worksheetId,
         className: ws.className,
@@ -357,7 +357,31 @@ export function registerWorksheetRoutes(app: express.Express) {
         cycle: ws.cycle,
         studentsWithQuestions
       });
-      res.json({ success: true, pdfUrl: result.pdfUrl });
+      const response: Record<string, unknown> = { success: true, pdfUrl: result.pdfUrl };
+      if (students.some(student => isBalvatikaStage(student.currentLevel))) {
+        const assessmentModes = await getAssessmentModesByConcept();
+        const observableConcepts = getObservableConcepts(assessmentModes);
+        const observationInput = {
+          classId: ws.classId,
+          className: ws.className,
+          section: ws.section,
+          cycle: ws.cycle,
+          worksheetId,
+          students: classStudents.map(student => ({
+            studentId: student.id,
+            name: student.name,
+            schoolId: student.schoolId,
+          })),
+          observableConcepts,
+        };
+        const [classGrid, perChild] = await Promise.all([
+          renderObservationClassGridPdf(observationInput),
+          renderObservationPerChildPdf(observationInput),
+        ]);
+        response.observationClassGridPdfUrl = classGrid.pdfUrl;
+        response.observationPerChildPdfUrl = perChild.pdfUrl;
+      }
+      res.json(response);
     } catch (err: any) {
       console.error('Worksheet PDF generation failed:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -423,7 +447,7 @@ export function registerWorksheetRoutes(app: express.Express) {
             student,
             assessmentModes,
           );
-          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const { renderWorksheetPdf, renderObservationClassGridPdf, renderObservationPerChildPdf } = await import('../paperGenerator');
           const worksheetId = `level_${student.id}_${Date.now()}`;
           const result = await renderWorksheetPdf({
             worksheetId,
@@ -438,7 +462,22 @@ export function registerWorksheetRoutes(app: express.Express) {
               questions,
             }],
           });
-          return res.json({ success: true, pdfUrl: result.pdfUrl, assessmentModeEnforced: true });
+          const classes = await dbStore.getClasses();
+          const classObj = classes.find(candidate => candidate.className === student.classGroup && candidate.section === student.section && candidate.schoolId === student.schoolId);
+          const observationInput = {
+            classId: classObj?.id || `class_${student.classGroup}`,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            worksheetId,
+            students: [{ studentId: student.id, name: student.name, schoolId: student.schoolId }],
+            observableConcepts: getObservableConcepts(assessmentModes),
+          };
+          const [classGrid, perChild] = await Promise.all([
+            renderObservationClassGridPdf(observationInput),
+            renderObservationPerChildPdf(observationInput),
+          ]);
+          return res.json({ success: true, pdfUrl: result.pdfUrl, observationClassGridPdfUrl: classGrid.pdfUrl, observationPerChildPdfUrl: perChild.pdfUrl, assessmentModeEnforced: true });
         }
         const generated = await generateLevelWorksheetsViaLevelsBackend([student]);
         if (generated.length === 0) {
@@ -500,13 +539,14 @@ export function registerWorksheetRoutes(app: express.Express) {
 
       const standardTargets = targets.filter(student => !isBalvatikaStage(student.currentLevel));
       const balvatikaTargets = targets.filter(student => isBalvatikaStage(student.currentLevel));
-      let generated: Array<{ studentId: string; studentName: string; batchId: string; sublevelId: string; setNum: number; pdfUrl: string }> = [];
+      let generated: Array<{ studentId: string; studentName: string; batchId: string; sublevelId: string; setNum: number; pdfUrl: string; observationClassGridPdfUrl?: string; observationPerChildPdfUrl?: string }> = [];
       if (standardTargets.length > 0) {
         generated = await generateLevelWorksheetsViaLevelsBackend(standardTargets, { includeBatchId: true });
       }
       if (balvatikaTargets.length > 0) {
         const assessmentModes = await getAssessmentModesByConcept();
-        const { renderWorksheetPdf } = await import('../paperGenerator');
+        const { renderWorksheetPdf, renderObservationClassGridPdf, renderObservationPerChildPdf } = await import('../paperGenerator');
+        const classes = await dbStore.getClasses();
         for (const student of balvatikaTargets) {
           const questions = prepareQuestionsForStudent(
             generateQuestionsForLevel(student.currentLevel, student.currentSubLevel || 0),
@@ -527,6 +567,20 @@ export function registerWorksheetRoutes(app: express.Express) {
               questions,
             }],
           });
+          const classObj = classes.find(candidate => candidate.className === student.classGroup && candidate.section === student.section && candidate.schoolId === student.schoolId);
+          const observationInput = {
+            classId: classObj?.id || `class_${student.classGroup}`,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            worksheetId,
+            students: [{ studentId: student.id, name: student.name, schoolId: student.schoolId }],
+            observableConcepts: getObservableConcepts(assessmentModes),
+          };
+          const [classGrid, perChild] = await Promise.all([
+            renderObservationClassGridPdf(observationInput),
+            renderObservationPerChildPdf(observationInput),
+          ]);
           generated.push({
             studentId: student.id,
             studentName: student.name,
@@ -534,6 +588,8 @@ export function registerWorksheetRoutes(app: express.Express) {
             sublevelId: `${student.currentLevel}.${student.currentSubLevel || 0}`,
             setNum: 1,
             pdfUrl: result.pdfUrl,
+            observationClassGridPdfUrl: classGrid.pdfUrl,
+            observationPerChildPdfUrl: perChild.pdfUrl,
           });
         }
       }
@@ -544,6 +600,8 @@ export function registerWorksheetRoutes(app: express.Express) {
         sublevelId: g.sublevelId,
         setNum: g.setNum,
         pdfUrl: g.pdfUrl,
+        observationClassGridPdfUrl: g.observationClassGridPdfUrl,
+        observationPerChildPdfUrl: g.observationPerChildPdfUrl,
       }));
 
       res.json({

@@ -1,5 +1,5 @@
 import { dbStore, Question, Student } from '../db';
-import { isBalvatikaStage } from '../config/curriculumMap';
+import { getLevelForConcept, isBalvatikaStage } from '../config/curriculumMap';
 
 export type AssessmentMode = 'written' | 'observed' | 'both';
 
@@ -43,4 +43,15 @@ export function prepareQuestionsForStudent(
 ): Question[] {
   if (!isBalvatikaStage(student.currentLevel)) return questions;
   return filterQuestionsForStudent(withAssessmentModes(questions, modes), student);
+}
+
+export function getObservableConcepts(
+  modes: Map<string, AssessmentMode>,
+): string[] {
+  return [...modes.entries()]
+    .filter(([conceptId, mode]) => {
+      const level = getLevelForConcept(conceptId)?.levelNumber;
+      return isBalvatikaStage(level) && (mode === 'observed' || mode === 'both');
+    })
+    .map(([conceptId]) => conceptId);
 }
