@@ -6,6 +6,8 @@ import { getAuthUser } from '../auth';
 import { recordStudentCycleLock } from '../paperLock';
 import { generateDiagnosticPaper } from '../paperGenerator';
 import { generateQuestionsForLevel } from '../levelGenerator';
+import { getAssessmentModesByConcept, prepareQuestionsForStudent } from '../services/assessmentMode';
+import { isBalvatikaStage } from '../config/curriculumMap';
 
 export function registerDiagnosticBulkRoutes(app: express.Express) {
   // Get active coordinators/administrators
@@ -23,6 +25,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
     fileName: string;
     filePath: string;
     pdfUrl: string;
+
     error: string;
     startedAt: string;
     completedAt: string;
@@ -201,13 +204,51 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
     // Run in background
     (async () => {
       try {
-        const result = await generateDiagnosticPaper({
-          classNumber: job.classNumber,
-          students: paperStudents.map(s => ({ name: s.name, studentId: s.studentId })),
-          onProgress: (setNum, total) => {
-            job.completed = setNum;
+        const assessmentModes = await getAssessmentModesByConcept();
+        const studentRecords = await dbStore.getStudents();
+        const batchRecords = paperStudents.map(paperStudent => studentRecords.find(student => student.id === paperStudent.studentId));
+        const allBalvatika = batchRecords.every(student => student && isBalvatikaStage(student.currentLevel));
+        let result;
+        if (allBalvatika) {
+          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const localStudents = batchRecords.filter((student): student is typeof studentRecords[number] => Boolean(student)).map(student => ({
+            studentId: student.id,
+            name: student.name,
+            currentLevel: student.currentLevel,
+            currentSubLevel: student.currentSubLevel || 0,
+            questions: prepareQuestionsForStudent(
+              generateQuestionsForLevel(student.currentLevel, student.currentSubLevel || 0),
+              student,
+              assessmentModes,
+            ),
+          }));
+          const worksheetId = `diagnostic_bulk_${job.jobId}`;
+          const localResult = await renderWorksheetPdf({
+            worksheetId,
+            className: `Class ${job.classNumber}`,
+            section: 'A',
+            cycle: 'Baseline',
+            studentsWithQuestions: localStudents,
+          });
+          for (const localStudent of localStudents) {
+            await dbStore.assignDiagnosticPaperToStudent(localStudent.studentId, localStudent.questions);
           }
-        });
+          result = {
+            ...localResult,
+            fileName: localResult.fileName,
+            filePath: localResult.filePath,
+            questions: localStudents.flatMap(student => student.questions),
+            answerKeyData: [],
+          };
+        } else {
+          result = await generateDiagnosticPaper({
+            classNumber: job.classNumber,
+            students: paperStudents.map(s => ({ name: s.name, studentId: s.studentId })),
+            onProgress: (setNum, total) => {
+              job.completed = setNum;
+            }
+          });
+        }
 
         job.fileName = result.fileName;
         job.filePath = result.filePath;
@@ -219,9 +260,13 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
         // Store answer keys internally in MongoDB / dbStore mapped strictly per student
         if (Array.isArray(result.answerKeyData)) {
           for (const keyItem of result.answerKeyData) {
-            const studentQuestions = (keyItem.questions && keyItem.questions.length > 0)
+            const student = studentRecords.find(candidate => candidate.id === keyItem.studentId);
+            const generatedQuestions = (keyItem.questions && keyItem.questions.length > 0)
               ? keyItem.questions
               : result.questions;
+            const studentQuestions = student
+              ? prepareQuestionsForStudent(generatedQuestions, student, assessmentModes)
+              : generatedQuestions;
 
             await dbStore.addDiagnosticAnswerKey({
               id: 'dak_' + randomUUID(),
@@ -806,9 +851,36 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
 
       let questions: Question[];
       let pdfUrl = '';
+
       let useMock = false;
+      const assessmentModes = await getAssessmentModesByConcept();
 
       try {
+        if (isBalvatikaStage(student.currentLevel)) {
+          const filteredQuestions = prepareQuestionsForStudent(
+            generateQuestionsForLevel(student.currentLevel, student.currentSubLevel || 0),
+            student,
+            assessmentModes,
+          );
+          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const worksheetId = `diagnostic_${student.id}_${Date.now()}`;
+          const localResult = await renderWorksheetPdf({
+            worksheetId,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            studentsWithQuestions: [{
+              studentId: student.id,
+              name: student.name,
+              currentLevel: student.currentLevel,
+              currentSubLevel: student.currentSubLevel || 0,
+              questions: filteredQuestions,
+            }],
+          });
+          questions = filteredQuestions;
+          pdfUrl = localResult.pdfUrl;
+          useMock = true;
+        } else {
         const result = await generateDiagnosticPaper({
           classNumber,
           students: [{
@@ -832,6 +904,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
         questions = (singleKey?.questions && singleKey.questions.length > 0)
           ? singleKey.questions as Question[]
           : result.questions;
+        questions = prepareQuestionsForStudent(questions, student, assessmentModes);
         if (singleKey) {
           const keyItem = singleKey;
           await dbStore.addDiagnosticAnswerKey({
@@ -859,6 +932,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           // scan yields zero answers. The bulk path has always done this.
           await dbStore.assignDiagnosticPaperToStudent(student.id, questions);
         }
+        }
       } catch (err: any) {
         console.error("Puppeteer paper generation failed, using generateQuestionsForLevel mock:", err);
         useMock = true;
@@ -876,7 +950,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           });
         }
         // Limit to 12 questions for a reasonable diagnostic
-        questions = questions.slice(0, 12);
+        questions = prepareQuestionsForStudent(questions, student, assessmentModes).slice(0, 12);
       }
 
       res.json({
@@ -887,7 +961,7 @@ export function registerDiagnosticBulkRoutes(app: express.Express) {
           studentId: student.id,
           studentName: student.name,
           questions,
-          pdfUrl
+          pdfUrl,
         }
       });
     } catch (err: any) {

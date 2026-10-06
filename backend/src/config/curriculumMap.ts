@@ -204,6 +204,11 @@ export function getConceptForLevel(levelNumber: number): LevelConceptConfig | un
   return CURRICULUM_MAPPING[levelNumber];
 }
 
+/** True when a level belongs to Stage 3 (Balvatika, the year before Class 1). */
+export function isBalvatikaStage(level: number | null | undefined): boolean {
+  return level != null && CURRICULUM_MAPPING[level]?.stage === 3;
+}
+
 /**
  * Get Level configuration by Concept ID (e.g. "S3.3")
  */

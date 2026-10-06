@@ -168,6 +168,7 @@ export interface Question {
   difficulty: 'easy' | 'medium' | 'hard';
   source_level: number; // Mapping to mathematical level
   conceptId?: string; // Concept ID from 93-node framework (e.g. S1.1, S3.3)
+  assessmentMode?: 'written' | 'observed' | 'both';
   svgAsset?: string; // Standard pre-built SVG asset category
 }
 
@@ -2800,8 +2801,13 @@ export class DBStore {
 
   async getQuestionTemplates(includeDeleted = false) {
     const filter = includeDeleted ? {} : { deletedAt: null };
-    return await this.mongoDb!.collection<QuestionTemplate>('questionTemplates')
-      .find(filter).sort({ createdAt: -1 }).toArray();
+    if (this.mongoDb) {
+      return await this.mongoDb.collection<QuestionTemplate>('questionTemplates')
+        .find(filter).sort({ createdAt: -1 }).toArray();
+    }
+    return (this.data?.questionTemplates || []).filter(template =>
+      includeDeleted || template.deletedAt == null
+    );
   }
 
   async getQuestionTemplateById(id: string) {
