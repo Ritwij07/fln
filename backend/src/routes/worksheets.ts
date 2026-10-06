@@ -9,6 +9,8 @@ import * as levelsBackendClient from '../levelsBackendClient';
 import { ROOT_DIR } from '../config';
 import { recordStudentCycleLock } from '../paperLock';
 import { getGenerationWindowStatus } from '../generationWindowRules';
+import { getAssessmentModesByConcept, prepareQuestionsForStudent } from '../services/assessmentMode';
+import { isBalvatikaStage } from '../config/curriculumMap';
 /**
  * Shared pipeline: build a roster -> Levels_backend /api/generate-batch ->
  * poll /api/batch-status -> /api/download-batch (zip) -> unpack
@@ -387,12 +389,19 @@ export function registerWorksheetRoutes(app: express.Express) {
       return res.status(400).json({ error: 'No students found in this class roster.' });
     }
 
-    // Compile distinct personalized questions per student based on level and sub-level
+    // Compile distinct personalized questions per student based on level and sub-level.
+    // Assessment mode is resolved from the authored question templates on the
+    // server; this is the backstop for callers that bypass the authoring UI.
     const compiledQuestions: Question[] = [];
+    const assessmentModes = await getAssessmentModesByConcept();
 
     for (const student of classStudents) {
       const subLvl = student.currentSubLevel || 0;
-      const qs = generateQuestionsForLevel(student.currentLevel, subLvl);
+      const qs = prepareQuestionsForStudent(
+        generateQuestionsForLevel(student.currentLevel, subLvl),
+        student,
+        assessmentModes,
+      );
       // Map question IDs to be student-specific to prevent duplicate collisions
       qs.forEach(q => {
         compiledQuestions.push({
@@ -585,6 +594,32 @@ export function registerWorksheetRoutes(app: express.Express) {
       await dbStore.addStudentCycleLock(lockAttempt.lock);
 
       try {
+        // Levels_backend has no assessment-mode contract. Keep Balvatika papers
+        // on this server so a direct call cannot bypass the written-item gate.
+        if (isBalvatikaStage(student.currentLevel)) {
+          const assessmentModes = await getAssessmentModesByConcept();
+          const questions = prepareQuestionsForStudent(
+            generateQuestionsForLevel(student.currentLevel, student.currentSubLevel || 0),
+            student,
+            assessmentModes,
+          );
+          const { renderWorksheetPdf } = await import('../paperGenerator');
+          const worksheetId = `level_${student.id}_${Date.now()}`;
+          const result = await renderWorksheetPdf({
+            worksheetId,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            studentsWithQuestions: [{
+              studentId: student.id,
+              name: student.name,
+              currentLevel: student.currentLevel,
+              currentSubLevel: student.currentSubLevel || 0,
+              questions,
+            }],
+          });
+          return res.json({ success: true, pdfUrl: result.pdfUrl, assessmentModeEnforced: true });
+        }
         const generated = await generateLevelWorksheetsViaLevelsBackend([student]);
         if (generated.length === 0) {
           throw new Error('Levels_backend returned no files for this student.');
@@ -643,14 +678,52 @@ export function registerWorksheetRoutes(app: express.Express) {
         return res.status(400).json({ error: 'No eligible (placed) students in this request.', skipped });
       }
 
-      const generated = await generateLevelWorksheetsViaLevelsBackend(targets, { includeBatchId: true });
+      const standardTargets = targets.filter(student => !isBalvatikaStage(student.currentLevel));
+      const balvatikaTargets = targets.filter(student => isBalvatikaStage(student.currentLevel));
+      let generated: Array<{ studentId: string; studentName: string; batchId: string; sublevelId: string; setNum: number; pdfUrl: string }> = [];
+      if (standardTargets.length > 0) {
+        generated = await generateLevelWorksheetsViaLevelsBackend(standardTargets, { includeBatchId: true });
+      }
+      if (balvatikaTargets.length > 0) {
+        const assessmentModes = await getAssessmentModesByConcept();
+        const { renderWorksheetPdf } = await import('../paperGenerator');
+        for (const student of balvatikaTargets) {
+          const questions = prepareQuestionsForStudent(
+            generateQuestionsForLevel(student.currentLevel, student.currentSubLevel || 0),
+            student,
+            assessmentModes,
+          );
+          const worksheetId = `level_${student.id}_${Date.now()}`;
+          const result = await renderWorksheetPdf({
+            worksheetId,
+            className: student.classGroup,
+            section: student.section,
+            cycle: 'Baseline',
+            studentsWithQuestions: [{
+              studentId: student.id,
+              name: student.name,
+              currentLevel: student.currentLevel,
+              currentSubLevel: student.currentSubLevel || 0,
+              questions,
+            }],
+          });
+          generated.push({
+            studentId: student.id,
+            studentName: student.name,
+            batchId: '',
+            sublevelId: `${student.currentLevel}.${student.currentSubLevel || 0}`,
+            setNum: 1,
+            pdfUrl: result.pdfUrl,
+          });
+        }
+      }
 
       const results = generated.map(g => ({
         studentId: g.studentId,
         studentName: g.studentName,
         sublevelId: g.sublevelId,
         setNum: g.setNum,
-        pdfUrl: g.pdfUrl
+        pdfUrl: g.pdfUrl,
       }));
 
       res.json({
