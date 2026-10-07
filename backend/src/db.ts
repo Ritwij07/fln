@@ -169,6 +169,7 @@ export interface Question {
   source_level: number; // Mapping to mathematical level
   conceptId?: string; // Concept ID from 93-node framework (e.g. S1.1, S3.3)
   svgAsset?: string; // Standard pre-built SVG asset category
+  choiceErrorTags?: Record<string, string>; // Maps distractor choice text to misconception error tag (#625/#627)
 }
 
 /**
@@ -877,6 +878,9 @@ export interface QuestionTemplate {
   variantKey: string;
   /** Free-form author tags, lowercased and de-duplicated on write. */
   tags: string[];
+
+  /** Maps distractor choice text to misconception error tag (#625/#627). */
+  choiceErrorTags?: Record<string, string>;
 
   /** Where the row came from. Bulk imports are worth being able to find again. */
   source: 'form' | 'csv';
