@@ -19,40 +19,43 @@ export const TOPIC_ERROR_TAGS: Record<string, string[]> = {
   shapes: [
     'under-inclusion',
     'over-generalization',
-    'orientation-confusion',
-    'attribute-confusion',
   ],
   // Sequential pattern completion & rule extrapolation
   patterns: [
     'missing-item',
-    'rule-drift',
-    'unit-misidentification',
+    'swapped-item',
+    'extra-item',
   ],
-  // Early literacy observation tags
-  literacy: [
-    'letter-reversal',
-    'phoneme-confusion',
-    'omission',
-  ],
+  // Early literacy observation tags placeholder for follow-up issue
+  literacy: [],
 };
 
 /**
  * Returns allowed error tags for a specific topic, or all tags keyed by topic.
+ * Safely guards against prototype property lookup (e.g. 'constructor').
  */
 export function getErrorTagsForTopic(topic?: string): string[] | Record<string, string[]> | null {
   if (!topic) {
     return TOPIC_ERROR_TAGS;
   }
   const normalized = topic.trim().toLowerCase();
-  return TOPIC_ERROR_TAGS[normalized] || null;
+  if (!Object.hasOwn(TOPIC_ERROR_TAGS, normalized)) {
+    return null;
+  }
+  return TOPIC_ERROR_TAGS[normalized];
 }
 
 /**
  * Validates whether an error tag is recognized for a given topic.
+ * Safely guards against prototype property lookup (e.g. 'constructor').
  */
 export function isValidErrorTag(topic: string, tag: string): boolean {
   if (!topic || !tag) return false;
-  const tags = TOPIC_ERROR_TAGS[topic.trim().toLowerCase()];
-  if (!tags) return false;
+  const normalizedTopic = topic.trim().toLowerCase();
+  if (!Object.hasOwn(TOPIC_ERROR_TAGS, normalizedTopic)) {
+    return false;
+  }
+  const tags = TOPIC_ERROR_TAGS[normalizedTopic];
+  if (!Array.isArray(tags)) return false;
   return tags.includes(tag.trim().toLowerCase());
 }

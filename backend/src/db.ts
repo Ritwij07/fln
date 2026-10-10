@@ -898,6 +898,8 @@ export interface QuestionTemplate {
   variantKey: string;
   /** Free-form author tags, lowercased and de-duplicated on write. */
   tags: string[];
+  /** Optional canonical Balvatika error tag (Issue #626). */
+  errorTag?: string;
 
   /** Where the row came from. Bulk imports are worth being able to find again. */
   source: 'form' | 'csv';
