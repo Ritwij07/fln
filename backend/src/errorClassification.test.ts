@@ -67,6 +67,7 @@ test('tagged choice distractor returns mapped misconception errorTag', () => {
 test('untagged choice or question with no choiceErrorTags does not crash and falls through', () => {
   const qWithTags = { choiceErrorTags: { 'Option B': 'misconception_tag_1' } };
   assert.strictEqual(classifyErrorType('Option D', 'Option A', qWithTags), 'unclassified');
+  assert.strictEqual(classifyErrorType('constructor', 'Option A', qWithTags), 'unclassified');
 
   const qWithoutTags = {};
   assert.strictEqual(classifyErrorType('Option B', 'Option A', qWithoutTags), 'unclassified');

@@ -53,13 +53,13 @@ export function classifyErrorType(
   const s = normalizeAnswer(submitted);
   if (s === '') return 'unanswered';
 
-  if (question?.choiceErrorTags) {
+  const tags = question?.choiceErrorTags;
+  if (tags) {
     const rawSubmitted = String(submitted ?? '').trim();
-    if (rawSubmitted && question.choiceErrorTags[rawSubmitted]) {
-      return question.choiceErrorTags[rawSubmitted];
-    }
-    if (s && question.choiceErrorTags[s]) {
-      return question.choiceErrorTags[s];
+    for (const key of [rawSubmitted, s]) {
+      if (key && Object.prototype.hasOwnProperty.call(tags, key) && typeof tags[key] === 'string' && tags[key]) {
+        return tags[key];
+      }
     }
   }
 
