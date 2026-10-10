@@ -14,6 +14,14 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+// ESM-safe replacement for CommonJS __dirname. The backend is ESM-only
+// (see backend/package.json "type": "module" and the tsx dev runner);
+// __dirname is not defined here. This was a runtime crash that surfaced
+// as the misleading "You may not have superadmin access" message in the
+// Question Intervention panel (see issue #670).
+const __dirname_esm = path.dirname(fileURLToPath(import.meta.url));
 
 export interface SvgThemeVariant {
   variantId: string;
@@ -41,7 +49,7 @@ interface Manifest {
  */
 function manifestPath(): string {
   const assetsDir = process.env.WORKSHEET_ASSETS_DIR
-    || path.resolve(__dirname, '../../frontend/public/worksheets');
+    || path.resolve(__dirname_esm, '../../frontend/public/worksheets');
   return path.resolve(assetsDir, '../assets/svg/questions/manifest.json');
 }
 

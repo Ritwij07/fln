@@ -42,7 +42,13 @@ export const QuestionInterventionPanel: React.FC = () => {
         apiFetch('/api/question-logics/stats'),
       ]);
       if (!mapRes.ok || !listRes.ok || !statsRes.ok) {
-        setLoadError('Could not load question logics. You may not have superadmin access.');
+        // Surface the actual failing endpoint instead of blaming the user's
+        // role. This previously masked backend issues (e.g. the ESM __dirname
+        // crash in svgAssetCatalog.ts) as a misleading "You may not have
+        // superadmin access." (see issue #670).
+        const failing = [mapRes, listRes, statsRes].find(r => !r.ok);
+        const detail = failing ? `${failing.status} ${failing.statusText} (${failing.url})` : 'one endpoint failed';
+        setLoadError(`Could not load question logics — ${detail}.`);
         return;
       }
       setLevelMap(await mapRes.json());
