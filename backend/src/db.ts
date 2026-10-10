@@ -899,6 +899,9 @@ export interface QuestionTemplate {
   /** Free-form author tags, lowercased and de-duplicated on write. */
   tags: string[];
 
+  /** Maps distractor choice text to misconception error tag (#625/#627). */
+  choiceErrorTags?: Record<string, string>;
+
   /** Where the row came from. Bulk imports are worth being able to find again. */
   source: 'form' | 'csv';
 
